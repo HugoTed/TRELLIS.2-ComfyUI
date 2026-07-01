@@ -67,8 +67,12 @@ def _format_pip_failure(cmd: List[str], result: subprocess.CompletedProcess[str]
     combined = f"{result.stdout or ''}\n{result.stderr or ''}"
     if "mathcalls.h" in combined and "cospi" in combined:
         message += (
-            "\n\nHint: glibc 2.38+ (Ubuntu 25.04/26.04) conflicts with CUDA 12.x math headers.\n"
-            "After git pull, retry bootstrap (auto shim) or run once:\n"
+            "\n\nHint: glibc 2.38+ (Ubuntu 25.04/26.04) needs a one-time CUDA header patch:\n"
+            "  sudo python scripts/patch_cuda_math_functions.py"
+        )
+    if "the global scope has no" in combined and "cmath" in combined:
+        message += (
+            "\n\nHint: unset CPATH/CPLUS_INCLUDE_PATH if set, then patch CUDA headers:\n"
             "  sudo python scripts/patch_cuda_math_functions.py"
         )
     return message
@@ -276,23 +280,29 @@ def _needs_glibc_cuda_compat() -> bool:
     return glibc is not None and glibc >= (2, 38)
 
 
-def _apply_glibc_cuda_compat(env: dict) -> dict:
+def _ensure_cuda_math_header_patch() -> None:
+    """Patch CUDA math_functions.h on glibc >= 2.38 (shim breaks cmath; patch is required)."""
     if not _needs_glibc_cuda_compat():
-        return env
-    compat_inc = get_plugin_root() / "scripts" / "cuda_glibc_compat"
-    shim = compat_inc / "bits" / "mathcalls.h"
-    if not shim.is_file():
-        return env
+        return
 
-    inc = str(compat_inc)
-    print(f"[TRELLIS.2 Bootstrap] Applying glibc/CUDA header shim (glibc {_glibc_version()})")
-    for key in ("CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH"):
-        env[key] = inc + os.pathsep + env.get(key, os.environ.get(key, ""))
-    nvcc_flags = env.get("TORCH_NVCC_FLAGS", os.environ.get("TORCH_NVCC_FLAGS", ""))
-    env["TORCH_NVCC_FLAGS"] = f"-I{inc} {nvcc_flags}".strip()
-    prepend = env.get("NVCC_PREPEND_FLAGS", os.environ.get("NVCC_PREPEND_FLAGS", ""))
-    env["NVCC_PREPEND_FLAGS"] = f"-I{inc} {prepend}".strip()
-    return env
+    plugin_root = get_plugin_root()
+    script = plugin_root / "scripts" / "patch_cuda_math_functions.py"
+    if not script.is_file():
+        raise RuntimeError(f"Missing CUDA patch script: {script}")
+
+    glibc = _glibc_version()
+    print(f"[TRELLIS.2 Bootstrap] Checking CUDA header patch for glibc {glibc[0]}.{glibc[1]}...")
+    result = subprocess.run(
+        [sys.executable, str(script), "--ensure"],
+        cwd=str(plugin_root),
+        capture_output=True,
+        text=True,
+    )
+    if result.stdout.strip():
+        print(result.stdout.strip())
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "CUDA header patch failed").strip()
+        raise RuntimeError(detail)
 
 
 def _max_gcc_major_for_cuda(cuda_version: Optional[tuple[int, int]]) -> int:
@@ -354,7 +364,7 @@ def _cuda_build_env() -> dict:
                 f"Or set: export CC=gcc-{max_gcc} CXX=g++-{max_gcc}"
             )
 
-    return _apply_glibc_cuda_compat(env)
+    return env
 
 
 def _check_cuda_build_prereqs() -> None:
@@ -373,10 +383,6 @@ def _check_cuda_build_prereqs() -> None:
         raise RuntimeError(
             "CUDA extension build prerequisites are missing:\n- " + "\n- ".join(issues)
         )
-    try:
-        _cuda_build_env()
-    except RuntimeError as exc:
-        raise RuntimeError(str(exc)) from exc
 
 
 def _ensure_ovoxel_source(plugin_root: Path) -> Path:
@@ -444,6 +450,7 @@ def _clone_repo(url: str, dest: Path, *, branch: Optional[str] = None, recursive
 def install_cuda_extensions(worker_python: Path) -> None:
     plugin_root = get_plugin_root()
     _check_cuda_build_prereqs()
+    _ensure_cuda_math_header_patch()
     build_env = _cuda_build_env()
     tmp = Path(tempfile.mkdtemp(prefix="trellis2-ext-"))
 
