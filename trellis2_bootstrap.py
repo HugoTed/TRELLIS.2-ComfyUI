@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -65,11 +67,9 @@ def _format_pip_failure(cmd: List[str], result: subprocess.CompletedProcess[str]
     combined = f"{result.stdout or ''}\n{result.stderr or ''}"
     if "mathcalls.h" in combined and "cospi" in combined:
         message += (
-            "\n\nHint: CUDA 12.4 headers conflict with newer Ubuntu glibc (24.04+). "
-            "Install a newer CUDA toolkit for compilation:\n"
-            "  sudo apt install cuda-nvcc-12-8 cuda-cudart-dev-12-8\n"
-            "  export CUDA_HOME=/usr/local/cuda-12.8\n"
-            "  export PATH=/usr/local/cuda-12.8/bin:$PATH"
+            "\n\nHint: glibc 2.38+ (Ubuntu 25.04/26.04) conflicts with CUDA 12.x math headers.\n"
+            "After git pull, retry bootstrap (auto shim) or run once:\n"
+            "  sudo python scripts/patch_cuda_math_functions.py"
         )
     return message
 
@@ -250,6 +250,51 @@ def _resolve_cuda_toolkit() -> dict:
     return {}
 
 
+def _glibc_version() -> Optional[tuple[int, int]]:
+    for cmd in (["ldd", "--version"],):
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            match = re.search(r"GLIBC (\d+)\.(\d+)", result.stdout)
+            if match:
+                return int(match.group(1)), int(match.group(2))
+        except (OSError, subprocess.CalledProcessError):
+            pass
+    try:
+        libc, version = platform.libc_ver()
+        if libc == "glibc" and version:
+            parts = version.split(".")
+            return int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, IndexError):
+        pass
+    return None
+
+
+def _needs_glibc_cuda_compat() -> bool:
+    if os.name == "nt":
+        return False
+    glibc = _glibc_version()
+    return glibc is not None and glibc >= (2, 38)
+
+
+def _apply_glibc_cuda_compat(env: dict) -> dict:
+    if not _needs_glibc_cuda_compat():
+        return env
+    compat_inc = get_plugin_root() / "scripts" / "cuda_glibc_compat"
+    shim = compat_inc / "bits" / "mathcalls.h"
+    if not shim.is_file():
+        return env
+
+    inc = str(compat_inc)
+    print(f"[TRELLIS.2 Bootstrap] Applying glibc/CUDA header shim (glibc {_glibc_version()})")
+    for key in ("CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH"):
+        env[key] = inc + os.pathsep + env.get(key, os.environ.get(key, ""))
+    nvcc_flags = env.get("TORCH_NVCC_FLAGS", os.environ.get("TORCH_NVCC_FLAGS", ""))
+    env["TORCH_NVCC_FLAGS"] = f"-I{inc} {nvcc_flags}".strip()
+    prepend = env.get("NVCC_PREPEND_FLAGS", os.environ.get("NVCC_PREPEND_FLAGS", ""))
+    env["NVCC_PREPEND_FLAGS"] = f"-I{inc} {prepend}".strip()
+    return env
+
+
 def _max_gcc_major_for_cuda(cuda_version: Optional[tuple[int, int]]) -> int:
     if cuda_version is None:
         return 13
@@ -280,32 +325,36 @@ def _cuda_build_env() -> dict:
         major = _compiler_major_version(cxx)
         if major is not None and major <= max_gcc:
             env.update({"CC": cc, "CXX": cxx})
-            return env
-        print(
-            f"[TRELLIS.2 Bootstrap] Warning: {cxx} is GCC {major}; "
-            f"CUDA {cuda_version or 'toolkit'} needs GCC <= {max_gcc}. Searching..."
-        )
+        else:
+            print(
+                f"[TRELLIS.2 Bootstrap] Warning: {cxx} is GCC {major}; "
+                f"CUDA {cuda_version or 'toolkit'} needs GCC <= {max_gcc}. Searching..."
+            )
+            cc = cxx = None
 
-    for version in range(max_gcc, 10, -1):
-        gcc = shutil.which(f"gcc-{version}")
-        gxx = shutil.which(f"g++-{version}")
-        if gcc and gxx:
-            print(f"[TRELLIS.2 Bootstrap] Using host compiler: {gcc}, {gxx}")
-            env.update({"CC": gcc, "CXX": gxx})
-            return env
+    if not env.get("CC"):
+        for version in range(max_gcc, 10, -1):
+            gcc = shutil.which(f"gcc-{version}")
+            gxx = shutil.which(f"g++-{version}")
+            if gcc and gxx:
+                print(f"[TRELLIS.2 Bootstrap] Using host compiler: {gcc}, {gxx}")
+                env.update({"CC": gcc, "CXX": gxx})
+                break
 
-    default_gxx = shutil.which("g++") or shutil.which("c++")
-    major = _compiler_major_version(default_gxx) if default_gxx else None
-    if major is not None and major > max_gcc:
-        raise RuntimeError(
-            f"Default GCC {major} is too new for CUDA toolkit "
-            f"{'.'.join(map(str, cuda_version)) if cuda_version else 'nvcc'} "
-            f"(requires GCC <= {max_gcc}).\n"
-            f"Install a compatible compiler, e.g.:\n"
-            f"  sudo apt install gcc-{max_gcc} g++-{max_gcc}\n"
-            f"Or set: export CC=gcc-{max_gcc} CXX=g++-{max_gcc}"
-        )
-    return env
+    if not env.get("CC"):
+        default_gxx = shutil.which("g++") or shutil.which("c++")
+        major = _compiler_major_version(default_gxx) if default_gxx else None
+        if major is not None and major > max_gcc:
+            raise RuntimeError(
+                f"Default GCC {major} is too new for CUDA toolkit "
+                f"{'.'.join(map(str, cuda_version)) if cuda_version else 'nvcc'} "
+                f"(requires GCC <= {max_gcc}).\n"
+                f"Install a compatible compiler, e.g.:\n"
+                f"  sudo apt install gcc-{max_gcc} g++-{max_gcc}\n"
+                f"Or set: export CC=gcc-{max_gcc} CXX=g++-{max_gcc}"
+            )
+
+    return _apply_glibc_cuda_compat(env)
 
 
 def _check_cuda_build_prereqs() -> None:
