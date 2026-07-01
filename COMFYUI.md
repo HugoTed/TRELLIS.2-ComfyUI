@@ -93,6 +93,7 @@ ComfyUI 主进程（任意 Python 版本，仅 requests）
 
 ## 故障排除
 
+- **节点列表里找不到 TRELLIS.2 节点**：确保已 `git pull` 最新代码（旧版 `from nodes import` 会与 ComfyUI 内置 `nodes.py` 冲突，导致静默注册失败）。重启后在节点菜单搜索 `TRELLIS`，分类为 **3d → trellis2**。
 - **Worker 启动失败**：查看插件目录下 `trellis2-worker.log`
 - **flash-attn 安装失败**：在 Worker 环境中 `pip install xformers`，并设置 `ATTN_BACKEND=xformers`
 - **ComfyUI 禁止 subprocess**：启动时加 `--allow-subprocess`
