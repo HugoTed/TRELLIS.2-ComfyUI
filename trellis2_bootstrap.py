@@ -73,7 +73,18 @@ def _format_pip_failure(cmd: List[str], result: subprocess.CompletedProcess[str]
     if "the global scope has no" in combined and "cmath" in combined:
         message += (
             "\n\nHint: unset CPATH/CPLUS_INCLUDE_PATH if set, then patch CUDA headers:\n"
-            "  sudo python scripts/patch_cuda_math_functions.py"
+            "  sudo python3 scripts/patch_cuda_math_functions.py"
+        )
+    if "cusparse.h" in combined:
+        message += (
+            "\n\nHint: install CUDA library headers (PyTorch extensions need cuSPARSE etc.):\n"
+            "  sudo apt install cuda-libraries-dev-12-8"
+        )
+    if "cannot find -lcuda" in combined:
+        message += (
+            "\n\nHint: add CUDA driver stub libs for linking, e.g.:\n"
+            "  export LIBRARY_PATH=/usr/local/cuda-12.8/lib64/stubs:$LIBRARY_PATH\n"
+            "Or: sudo apt install cuda-driver-dev-12-8"
         )
     return message
 
@@ -316,6 +327,28 @@ def _max_gcc_major_for_cuda(cuda_version: Optional[tuple[int, int]]) -> int:
     return 12
 
 
+def _append_cuda_link_paths(env: dict, cuda_home: Optional[Path]) -> dict:
+    if cuda_home is None:
+        return env
+    lib64 = cuda_home / "lib64"
+    stubs = lib64 / "stubs"
+    paths: List[str] = []
+    if stubs.is_dir():
+        paths.append(str(stubs))
+    if lib64.is_dir():
+        paths.append(str(lib64))
+    if not paths:
+        return env
+    joined = os.pathsep.join(paths)
+    for key in ("LIBRARY_PATH", "LD_LIBRARY_PATH"):
+        env[key] = joined + os.pathsep + env.get(key, os.environ.get(key, ""))
+    link_flags = env.get("LDFLAGS", os.environ.get("LDFLAGS", ""))
+    for path in paths:
+        link_flags = f"-L{path} {link_flags}".strip()
+    env["LDFLAGS"] = link_flags
+    return env
+
+
 def _cuda_build_env() -> dict:
     """Pick CUDA toolkit + host compiler versions that can build extensions."""
     env = _resolve_cuda_toolkit()
@@ -364,7 +397,34 @@ def _cuda_build_env() -> dict:
                 f"Or set: export CC=gcc-{max_gcc} CXX=g++-{max_gcc}"
             )
 
+    env = _append_cuda_link_paths(env, cuda_home)
+    stubs_lib = (cuda_home / "lib64" / "stubs" / "libcuda.so") if cuda_home else None
+    if stubs_lib is not None and stubs_lib.is_file():
+        print(f"[TRELLIS.2 Bootstrap] Using CUDA link stubs: {stubs_lib.parent}")
+    elif cuda_home is not None:
+        print(
+            "[TRELLIS.2 Bootstrap] Warning: libcuda.so stub not found. "
+            "Install: sudo apt install cuda-driver-dev-12-8"
+        )
     return env
+
+
+def _cuda_include_dirs() -> List[Path]:
+    env = _resolve_cuda_toolkit()
+    dirs: List[Path] = []
+    if env.get("CUDA_HOME"):
+        dirs.append(Path(env["CUDA_HOME"]) / "include")
+    for version in ("13.0", "12.8", "12.6", "12.5", "12.4"):
+        dirs.append(Path(f"/usr/local/cuda-{version}") / "include")
+    dirs.append(Path("/usr/local/cuda/include"))
+    return dirs
+
+
+def _cuda_dev_headers_present() -> bool:
+    for include_dir in _cuda_include_dirs():
+        if (include_dir / "cusparse.h").is_file():
+            return True
+    return False
 
 
 def _check_cuda_build_prereqs() -> None:
@@ -372,10 +432,15 @@ def _check_cuda_build_prereqs() -> None:
     cuda_env = _resolve_cuda_toolkit()
     if not cuda_env and shutil.which("nvcc") is None:
         issues.append(
-            "nvcc not found. Install a CUDA toolkit for compiling extensions, e.g.:\n"
-            "  sudo apt install cuda-nvcc-12-8 cuda-cudart-dev-12-8\n"
+            "nvcc not found. Install CUDA build packages, e.g.:\n"
+            "  sudo apt install cuda-nvcc-12-8 cuda-cudart-dev-12-8 cuda-libraries-dev-12-8\n"
             "  export CUDA_HOME=/usr/local/cuda-12.8\n"
             "  export PATH=/usr/local/cuda-12.8/bin:$PATH"
+        )
+    elif not _cuda_dev_headers_present():
+        issues.append(
+            "CUDA library headers missing (cusparse.h not found). Install:\n"
+            "  sudo apt install cuda-libraries-dev-12-8"
         )
     if shutil.which("g++") is None and shutil.which("c++") is None:
         issues.append("C++ compiler not found. On Debian/Ubuntu: sudo apt install build-essential")
