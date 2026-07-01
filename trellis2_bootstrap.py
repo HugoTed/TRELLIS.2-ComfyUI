@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-from config import get_plugin_root, get_venv_dir, get_worker_python, load_config
+from trellis2_config import get_plugin_root, get_venv_dir, get_worker_python, load_config
 
 
 def _run(cmd: List[str], cwd: Optional[Path] = None, env: Optional[dict] = None) -> None:
@@ -141,7 +141,6 @@ def install_cuda_extensions(worker_python: Path) -> None:
         except subprocess.CalledProcessError as exc:
             print(f"[TRELLIS.2 Bootstrap] Warning: {name} install failed: {exc}")
 
-    # o-voxel from local source
     ovoxel_src = plugin_root / "o-voxel"
     if ovoxel_src.is_dir():
         print("[TRELLIS.2 Bootstrap] Installing o-voxel from local source...")

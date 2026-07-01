@@ -1,5 +1,5 @@
-from bootstrap import ensure_worker_installed
-from client.worker_client import ensure_worker_running, ping_worker
+from trellis2_bootstrap import ensure_worker_installed
+from trellis2_client.worker_client import ensure_worker_running, ping_worker
 
 
 class Trellis2Setup:

@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from client.worker_client import ensure_worker_running, generate_glb
+from trellis2_client.worker_client import ensure_worker_running, generate_glb
 
 try:
     from comfy_api.latest import Types as ComfyTypes

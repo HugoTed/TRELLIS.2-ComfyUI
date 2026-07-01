@@ -62,7 +62,7 @@ bash scripts/install_worker.sh
 powershell -ExecutionPolicy Bypass -File scripts/install_worker.ps1
 
 # 或
-python bootstrap.py
+python trellis2_bootstrap.py
 ```
 
 Linux 前置依赖：
@@ -77,8 +77,8 @@ sudo apt install python3.10 python3.10-venv git
 ```
 ComfyUI 主进程（任意 Python 版本，仅 requests）
   ├── nodes/              ← 轻量节点
-  ├── client/             ← HTTP 客户端，自动拉起 Worker
-  └── bootstrap.py        ← 创建 .trellis2-venv
+  ├── trellis2_client/        ← HTTP 客户端，自动拉起 Worker
+  └── trellis2_bootstrap.py    ← 创建 .trellis2-venv
 
 .trellis2-venv（独立 Python 3.10）
   └── worker/server.py    ← 常驻 HTTP 服务
@@ -93,7 +93,7 @@ ComfyUI 主进程（任意 Python 版本，仅 requests）
 
 ## 故障排除
 
-- **节点列表里找不到 TRELLIS.2 节点**：确保已 `git pull` 最新代码（旧版 `from nodes import` 会与 ComfyUI 内置 `nodes.py` 冲突，导致静默注册失败）。重启后在节点菜单搜索 `TRELLIS`，分类为 **3d → trellis2**。
+- **节点列表里找不到 TRELLIS.2 节点 / IMPORT FAILED**：若同时安装了 SkinTokens 等 Worker 插件，**禁止**使用通用模块名（`nodes`、`client`、`bootstrap`、`config`）。本插件已全部改为 `trellis2_*` 前缀。请 `git pull` 最新代码并重启 ComfyUI，在节点菜单搜索 `TRELLIS`，分类 **3d → trellis2**。
 - **Worker 启动失败**：查看插件目录下 `trellis2-worker.log`
 - **flash-attn 安装失败**：在 Worker 环境中 `pip install xformers`，并设置 `ATTN_BACKEND=xformers`
 - **ComfyUI 禁止 subprocess**：启动时加 `--allow-subprocess`

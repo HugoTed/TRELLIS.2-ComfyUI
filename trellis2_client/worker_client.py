@@ -12,9 +12,9 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from bootstrap import ensure_worker_installed, venv_exists
-from config import get_model_id, get_plugin_root, get_worker_python, get_worker_url, load_config
-from process_util import popen_detached, terminate_process_tree
+from trellis2_bootstrap import ensure_worker_installed, venv_exists
+from trellis2_config import get_model_id, get_plugin_root, get_worker_python, get_worker_url, load_config
+from trellis2_process_util import popen_detached, terminate_process_tree
 
 _worker_proc = None
 
@@ -73,10 +73,9 @@ def _start_worker_process():
 
     worker_python = get_worker_python()
     if worker_python is None:
-        raise RuntimeError("TRELLIS.2 worker venv is not installed. Run bootstrap or TRELLIS.2 Setup node.")
+        raise RuntimeError("TRELLIS.2 worker venv is not installed. Run trellis2_bootstrap or TRELLIS.2 Setup node.")
 
     plugin_root = get_plugin_root()
-    config = load_config()
     output_dir = _resolve_output_dir()
     log_path = _worker_log_path()
     log_file = open(log_path, "a", encoding="utf-8")
@@ -138,7 +137,7 @@ def ensure_worker_running(auto_install: Optional[bool] = None) -> str:
 
     if not venv_exists():
         raise RuntimeError(
-            "TRELLIS.2 worker is not installed. Add TRELLIS.2 Setup node or run: python bootstrap.py"
+            "TRELLIS.2 worker is not installed. Add TRELLIS.2 Setup node or run: python trellis2_bootstrap.py"
         )
 
     if not auto_start:

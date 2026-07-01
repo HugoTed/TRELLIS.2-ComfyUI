@@ -1,4 +1,4 @@
-from client.worker_client import preload_model
+from trellis2_client.worker_client import preload_model
 
 
 class Trellis2LoadModel:
