@@ -1,0 +1,19 @@
+{
+  "worker": {
+    "host": "127.0.0.1",
+    "port": 18188,
+    "venv": ".trellis2-venv",
+    "auto_start": true,
+    "auto_install": true,
+    "startup_timeout": 600
+  },
+  "model": {
+    "auto_download": true,
+    "model_id": "microsoft/TRELLIS.2-4B"
+  },
+  "torch": {
+    "index_url": "https://download.pytorch.org/whl/cu124",
+    "version": "2.6.0",
+    "torchvision_version": "0.21.0"
+  }
+}

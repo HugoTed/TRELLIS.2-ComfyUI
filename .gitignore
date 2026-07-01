@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ComfyUI plugin
+.trellis2-venv/
+trellis2-worker.log
+config.json
+output/
