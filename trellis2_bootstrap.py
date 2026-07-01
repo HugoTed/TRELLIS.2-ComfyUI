@@ -58,10 +58,20 @@ def _format_subprocess_output(result: subprocess.CompletedProcess[str], *, max_l
 
 
 def _format_pip_failure(cmd: List[str], result: subprocess.CompletedProcess[str]) -> str:
-    return (
+    message = (
         f"pip install failed (exit {result.returncode}): {' '.join(cmd)}\n"
         f"{_format_subprocess_output(result)}"
     )
+    combined = f"{result.stdout or ''}\n{result.stderr or ''}"
+    if "mathcalls.h" in combined and "cospi" in combined:
+        message += (
+            "\n\nHint: CUDA 12.4 headers conflict with newer Ubuntu glibc (24.04+). "
+            "Install a newer CUDA toolkit for compilation:\n"
+            "  sudo apt install cuda-nvcc-12-8 cuda-cudart-dev-12-8\n"
+            "  export CUDA_HOME=/usr/local/cuda-12.8\n"
+            "  export PATH=/usr/local/cuda-12.8/bin:$PATH"
+        )
+    return message
 
 
 def find_python310() -> Optional[Path]:
@@ -191,44 +201,122 @@ def _compiler_major_version(compiler: str) -> Optional[int]:
         return None
 
 
+def _nvcc_version(cuda_home: Path) -> Optional[tuple[int, int]]:
+    nvcc = cuda_home / "bin" / "nvcc"
+    if not nvcc.is_file():
+        return None
+    try:
+        result = subprocess.run(
+            [str(nvcc), "--version"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        for token in result.stdout.replace(",", " ").split():
+            if token.count(".") >= 1 and token[0].isdigit():
+                parts = token.split(".")
+                return int(parts[0]), int(parts[1])
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        return None
+    return None
+
+
+def _resolve_cuda_toolkit() -> dict:
+    """Prefer the newest installed CUDA toolkit (12.8+ avoids glibc header bugs on Ubuntu 26.04)."""
+    if os.environ.get("CUDA_HOME"):
+        cuda_home = Path(os.environ["CUDA_HOME"])
+        if (cuda_home / "bin" / "nvcc").is_file():
+            bin_dir = str(cuda_home / "bin")
+            path = os.environ.get("PATH", "")
+            if not path.startswith(bin_dir):
+                path = bin_dir + os.pathsep + path
+            return {"CUDA_HOME": str(cuda_home), "PATH": path}
+
+    for version in ("13.0", "12.8", "12.6", "12.5", "12.4", "12.3"):
+        cuda_home = Path(f"/usr/local/cuda-{version}")
+        if (cuda_home / "bin" / "nvcc").is_file():
+            print(f"[TRELLIS.2 Bootstrap] Using CUDA toolkit: {cuda_home}")
+            return {
+                "CUDA_HOME": str(cuda_home),
+                "PATH": f"{cuda_home / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
+            }
+
+    default = Path("/usr/local/cuda")
+    if (default / "bin" / "nvcc").is_file():
+        return {
+            "CUDA_HOME": str(default),
+            "PATH": f"{default / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
+        }
+    return {}
+
+
+def _max_gcc_major_for_cuda(cuda_version: Optional[tuple[int, int]]) -> int:
+    if cuda_version is None:
+        return 13
+    major, minor = cuda_version
+    if major > 12 or (major == 12 and minor >= 6):
+        return 14
+    if major == 12 and minor >= 4:
+        return 13
+    return 12
+
+
 def _cuda_build_env() -> dict:
-    """Pick a host compiler compatible with CUDA 12.4 (gcc <= 13)."""
+    """Pick CUDA toolkit + host compiler versions that can build extensions."""
+    env = _resolve_cuda_toolkit()
+    cuda_home = Path(env["CUDA_HOME"]) if env.get("CUDA_HOME") else None
+    cuda_version = _nvcc_version(cuda_home) if cuda_home else None
+    max_gcc = _max_gcc_major_for_cuda(cuda_version)
+
+    if cuda_version == (12, 4):
+        print(
+            "[TRELLIS.2 Bootstrap] Warning: CUDA 12.4 may fail on Ubuntu 24.04+/26.04. "
+            "Prefer cuda-nvcc-12-8 if builds fail."
+        )
+
     cc = os.environ.get("CC")
     cxx = os.environ.get("CXX")
     if cc and cxx:
         major = _compiler_major_version(cxx)
-        if major is not None and major <= 13:
-            return {"CC": cc, "CXX": cxx}
+        if major is not None and major <= max_gcc:
+            env.update({"CC": cc, "CXX": cxx})
+            return env
         print(
             f"[TRELLIS.2 Bootstrap] Warning: {cxx} is GCC {major}; "
-            "CUDA 12.4 needs GCC <= 13. Searching for gcc-13..."
+            f"CUDA {cuda_version or 'toolkit'} needs GCC <= {max_gcc}. Searching..."
         )
 
-    for version in (13, 12, 11):
+    for version in range(max_gcc, 10, -1):
         gcc = shutil.which(f"gcc-{version}")
         gxx = shutil.which(f"g++-{version}")
         if gcc and gxx:
             print(f"[TRELLIS.2 Bootstrap] Using host compiler: {gcc}, {gxx}")
-            return {"CC": gcc, "CXX": gxx}
+            env.update({"CC": gcc, "CXX": gxx})
+            return env
 
     default_gxx = shutil.which("g++") or shutil.which("c++")
     major = _compiler_major_version(default_gxx) if default_gxx else None
-    if major is not None and major > 13:
+    if major is not None and major > max_gcc:
         raise RuntimeError(
-            f"Default GCC {major} is too new for CUDA 12.4 nvcc (requires GCC <= 13).\n"
-            "Install a compatible compiler, then retry:\n"
-            "  sudo apt install gcc-13 g++-13\n"
-            "Or set: export CC=gcc-13 CXX=g++-13"
+            f"Default GCC {major} is too new for CUDA toolkit "
+            f"{'.'.join(map(str, cuda_version)) if cuda_version else 'nvcc'} "
+            f"(requires GCC <= {max_gcc}).\n"
+            f"Install a compatible compiler, e.g.:\n"
+            f"  sudo apt install gcc-{max_gcc} g++-{max_gcc}\n"
+            f"Or set: export CC=gcc-{max_gcc} CXX=g++-{max_gcc}"
         )
-    return {}
+    return env
 
 
 def _check_cuda_build_prereqs() -> None:
     issues: List[str] = []
-    if shutil.which("nvcc") is None:
+    cuda_env = _resolve_cuda_toolkit()
+    if not cuda_env and shutil.which("nvcc") is None:
         issues.append(
-            "nvcc not found on PATH. CUDA extensions must be compiled against CUDA Toolkit 12.4 "
-            "(matching worker PyTorch cu124). Example: export PATH=/usr/local/cuda/bin:$PATH"
+            "nvcc not found. Install a CUDA toolkit for compiling extensions, e.g.:\n"
+            "  sudo apt install cuda-nvcc-12-8 cuda-cudart-dev-12-8\n"
+            "  export CUDA_HOME=/usr/local/cuda-12.8\n"
+            "  export PATH=/usr/local/cuda-12.8/bin:$PATH"
         )
     if shutil.which("g++") is None and shutil.which("c++") is None:
         issues.append("C++ compiler not found. On Debian/Ubuntu: sudo apt install build-essential")
