@@ -12,10 +12,56 @@ from typing import Iterable, List, Optional
 
 from trellis2_config import get_plugin_root, get_venv_dir, get_worker_python, load_config
 
+_REQUIRED_IMPORTS = (
+    "o_voxel",
+    "cumesh",
+    "nvdiffrast.torch",
+    "flex_gemm",
+    "nvdiffrec_render",
+)
 
-def _run(cmd: List[str], cwd: Optional[Path] = None, env: Optional[dict] = None) -> None:
+
+def _run(
+    cmd: List[str],
+    cwd: Optional[Path] = None,
+    env: Optional[dict] = None,
+    *,
+    check: bool = True,
+    capture: bool = False,
+) -> subprocess.CompletedProcess[str]:
     print(f"[TRELLIS.2 Bootstrap] {' '.join(cmd)}")
-    subprocess.run(cmd, cwd=str(cwd) if cwd else None, env=env, check=True)
+    result = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        env=env,
+        check=False,
+        capture_output=capture,
+        text=True,
+    )
+    if check and result.returncode != 0:
+        if capture:
+            raise RuntimeError(_format_subprocess_output(result))
+        raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr)
+    return result
+
+
+def _format_subprocess_output(result: subprocess.CompletedProcess[str], *, max_lines: int = 40) -> str:
+    chunks: List[str] = []
+    for label, stream in (("stdout", result.stdout), ("stderr", result.stderr)):
+        if not stream:
+            continue
+        lines = stream.strip().splitlines()
+        if len(lines) > max_lines:
+            lines = ["..."] + lines[-max_lines:]
+        chunks.append(f"{label}:\n" + "\n".join(lines))
+    return "\n\n".join(chunks) if chunks else "(no output captured)"
+
+
+def _format_pip_failure(cmd: List[str], result: subprocess.CompletedProcess[str]) -> str:
+    return (
+        f"pip install failed (exit {result.returncode}): {' '.join(cmd)}\n"
+        f"{_format_subprocess_output(result)}"
+    )
 
 
 def find_python310() -> Optional[Path]:
@@ -105,8 +151,91 @@ def create_venv() -> Path:
     return worker_python
 
 
-def _pip_install(worker_python: Path, args: List[str], cwd: Optional[Path] = None) -> None:
-    _run([str(worker_python), "-m", "pip", "install", *args], cwd=cwd)
+def _pip_install(
+    worker_python: Path,
+    args: List[str],
+    cwd: Optional[Path] = None,
+    *,
+    required: bool = True,
+) -> None:
+    cmd = [str(worker_python), "-m", "pip", "install", *args]
+    print(f"[TRELLIS.2 Bootstrap] {' '.join(cmd)}")
+    result = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        message = _format_pip_failure(cmd, result)
+        if required:
+            raise RuntimeError(message)
+        print(f"[TRELLIS.2 Bootstrap] Warning: {message}")
+
+
+def _check_cuda_build_prereqs() -> None:
+    issues: List[str] = []
+    if shutil.which("nvcc") is None:
+        issues.append(
+            "nvcc not found on PATH. CUDA extensions must be compiled against CUDA Toolkit 12.4 "
+            "(matching worker PyTorch cu124). Example: export PATH=/usr/local/cuda/bin:$PATH"
+        )
+    if shutil.which("g++") is None and shutil.which("c++") is None:
+        issues.append("C++ compiler not found. On Debian/Ubuntu: sudo apt install build-essential")
+    if issues:
+        raise RuntimeError(
+            "CUDA extension build prerequisites are missing:\n- " + "\n- ".join(issues)
+        )
+
+
+def _ensure_ovoxel_source(plugin_root: Path) -> Path:
+    ovoxel_src = plugin_root / "o-voxel"
+    eigen_marker = ovoxel_src / "third_party" / "eigen" / "Eigen"
+    if not ovoxel_src.is_dir():
+        raise RuntimeError(
+            "o-voxel source directory not found. Clone the plugin with:\n"
+            "  git clone --recursive https://github.com/your/TRELLIS.2-ComfyUI.git"
+        )
+    if eigen_marker.is_dir():
+        return ovoxel_src
+
+    if (plugin_root / ".git").exists():
+        print("[TRELLIS.2 Bootstrap] Initializing git submodules for o-voxel...")
+        _run(["git", "submodule", "update", "--init", "--recursive"], cwd=plugin_root)
+
+    if not eigen_marker.is_dir():
+        raise RuntimeError(
+            "o-voxel Eigen submodule is missing. From the plugin directory run:\n"
+            "  git submodule update --init --recursive"
+        )
+    return ovoxel_src
+
+
+def verify_worker_imports(worker_python: Path) -> None:
+    modules = ", ".join(repr(name) for name in _REQUIRED_IMPORTS)
+    script = f"""
+import importlib
+missing = []
+for name in [{modules}]:
+    try:
+        importlib.import_module(name)
+    except Exception as exc:
+        missing.append(f"{{name}}: {{exc}}")
+if missing:
+    raise SystemExit("Missing required worker modules:\\n" + "\\n".join(missing))
+"""
+    result = subprocess.run(
+        [str(worker_python), "-c", script],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(
+            "Worker environment is missing required CUDA extension packages.\n"
+            f"{detail}\n"
+            "Re-run TRELLIS.2 Setup with force_reinstall=true after fixing build prerequisites."
+        )
 
 
 def _clone_repo(url: str, dest: Path, *, branch: Optional[str] = None, recursive: bool = False) -> None:
@@ -123,6 +252,7 @@ def _clone_repo(url: str, dest: Path, *, branch: Optional[str] = None, recursive
 
 def install_cuda_extensions(worker_python: Path) -> None:
     plugin_root = get_plugin_root()
+    _check_cuda_build_prereqs()
     tmp = Path(tempfile.mkdtemp(prefix="trellis2-ext-"))
 
     extensions = [
@@ -132,30 +262,33 @@ def install_cuda_extensions(worker_python: Path) -> None:
         ("FlexGEMM", "https://github.com/JeffreyXiang/FlexGEMM.git", None, True),
     ]
 
-    for name, url, branch, recursive in extensions:
-        dest = tmp / name
-        print(f"[TRELLIS.2 Bootstrap] Installing {name}...")
-        try:
+    try:
+        for name, url, branch, recursive in extensions:
+            dest = tmp / name
+            print(f"[TRELLIS.2 Bootstrap] Installing {name}...")
             _clone_repo(url, dest, branch=branch, recursive=recursive)
             _pip_install(worker_python, [str(dest), "--no-build-isolation"], cwd=plugin_root)
-        except subprocess.CalledProcessError as exc:
-            print(f"[TRELLIS.2 Bootstrap] Warning: {name} install failed: {exc}")
 
-    ovoxel_src = plugin_root / "o-voxel"
-    if ovoxel_src.is_dir():
+        ovoxel_src = _ensure_ovoxel_source(plugin_root)
         print("[TRELLIS.2 Bootstrap] Installing o-voxel from local source...")
-        try:
-            _pip_install(worker_python, [str(ovoxel_src), "--no-build-isolation"], cwd=plugin_root)
-        except subprocess.CalledProcessError as exc:
-            print(f"[TRELLIS.2 Bootstrap] Warning: o-voxel install failed: {exc}")
-    else:
-        print("[TRELLIS.2 Bootstrap] Warning: o-voxel directory not found; run git clone --recursive")
+        _pip_install(worker_python, [str(ovoxel_src), "--no-build-isolation"], cwd=plugin_root)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
     print("[TRELLIS.2 Bootstrap] Installing flash-attn (optional)...")
-    try:
-        _pip_install(worker_python, ["flash-attn==2.7.3", "--no-build-isolation"], cwd=plugin_root)
-    except subprocess.CalledProcessError:
-        print("[TRELLIS.2 Bootstrap] flash-attn install failed; set ATTN_BACKEND=sdpa or install xformers.")
+    _pip_install(
+        worker_python,
+        ["flash-attn==2.7.3", "--no-build-isolation"],
+        cwd=plugin_root,
+        required=False,
+    )
+    if subprocess.run(
+        [str(worker_python), "-c", "import flash_attn"],
+        capture_output=True,
+    ).returncode != 0:
+        print("[TRELLIS.2 Bootstrap] flash-attn not installed; set ATTN_BACKEND=sdpa or install xformers.")
+
+    verify_worker_imports(worker_python)
 
 
 def install_worker_dependencies() -> None:
@@ -198,6 +331,9 @@ def ensure_worker_installed(force: bool = False) -> str:
         install_worker_dependencies()
     else:
         messages.append(f"Worker venv ready: {venv_dir}")
+        worker_python = get_worker_python()
+        if worker_python is not None:
+            verify_worker_imports(worker_python)
 
     if config["model"].get("auto_download", True):
         messages.append(
