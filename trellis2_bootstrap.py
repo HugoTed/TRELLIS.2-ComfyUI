@@ -157,12 +157,17 @@ def _pip_install(
     cwd: Optional[Path] = None,
     *,
     required: bool = True,
+    env: Optional[dict] = None,
 ) -> None:
     cmd = [str(worker_python), "-m", "pip", "install", *args]
     print(f"[TRELLIS.2 Bootstrap] {' '.join(cmd)}")
+    run_env = os.environ.copy()
+    if env:
+        run_env.update(env)
     result = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
+        env=run_env,
         capture_output=True,
         text=True,
     )
@@ -171,6 +176,51 @@ def _pip_install(
         if required:
             raise RuntimeError(message)
         print(f"[TRELLIS.2 Bootstrap] Warning: {message}")
+
+
+def _compiler_major_version(compiler: str) -> Optional[int]:
+    try:
+        result = subprocess.run(
+            [compiler, "-dumpversion"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return int(result.stdout.strip().split(".")[0])
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        return None
+
+
+def _cuda_build_env() -> dict:
+    """Pick a host compiler compatible with CUDA 12.4 (gcc <= 13)."""
+    cc = os.environ.get("CC")
+    cxx = os.environ.get("CXX")
+    if cc and cxx:
+        major = _compiler_major_version(cxx)
+        if major is not None and major <= 13:
+            return {"CC": cc, "CXX": cxx}
+        print(
+            f"[TRELLIS.2 Bootstrap] Warning: {cxx} is GCC {major}; "
+            "CUDA 12.4 needs GCC <= 13. Searching for gcc-13..."
+        )
+
+    for version in (13, 12, 11):
+        gcc = shutil.which(f"gcc-{version}")
+        gxx = shutil.which(f"g++-{version}")
+        if gcc and gxx:
+            print(f"[TRELLIS.2 Bootstrap] Using host compiler: {gcc}, {gxx}")
+            return {"CC": gcc, "CXX": gxx}
+
+    default_gxx = shutil.which("g++") or shutil.which("c++")
+    major = _compiler_major_version(default_gxx) if default_gxx else None
+    if major is not None and major > 13:
+        raise RuntimeError(
+            f"Default GCC {major} is too new for CUDA 12.4 nvcc (requires GCC <= 13).\n"
+            "Install a compatible compiler, then retry:\n"
+            "  sudo apt install gcc-13 g++-13\n"
+            "Or set: export CC=gcc-13 CXX=g++-13"
+        )
+    return {}
 
 
 def _check_cuda_build_prereqs() -> None:
@@ -186,6 +236,10 @@ def _check_cuda_build_prereqs() -> None:
         raise RuntimeError(
             "CUDA extension build prerequisites are missing:\n- " + "\n- ".join(issues)
         )
+    try:
+        _cuda_build_env()
+    except RuntimeError as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def _ensure_ovoxel_source(plugin_root: Path) -> Path:
@@ -253,6 +307,7 @@ def _clone_repo(url: str, dest: Path, *, branch: Optional[str] = None, recursive
 def install_cuda_extensions(worker_python: Path) -> None:
     plugin_root = get_plugin_root()
     _check_cuda_build_prereqs()
+    build_env = _cuda_build_env()
     tmp = Path(tempfile.mkdtemp(prefix="trellis2-ext-"))
 
     extensions = [
@@ -267,11 +322,21 @@ def install_cuda_extensions(worker_python: Path) -> None:
             dest = tmp / name
             print(f"[TRELLIS.2 Bootstrap] Installing {name}...")
             _clone_repo(url, dest, branch=branch, recursive=recursive)
-            _pip_install(worker_python, [str(dest), "--no-build-isolation"], cwd=plugin_root)
+            _pip_install(
+                worker_python,
+                [str(dest), "--no-build-isolation"],
+                cwd=plugin_root,
+                env=build_env,
+            )
 
         ovoxel_src = _ensure_ovoxel_source(plugin_root)
         print("[TRELLIS.2 Bootstrap] Installing o-voxel from local source...")
-        _pip_install(worker_python, [str(ovoxel_src), "--no-build-isolation"], cwd=plugin_root)
+        _pip_install(
+            worker_python,
+            [str(ovoxel_src), "--no-build-isolation"],
+            cwd=plugin_root,
+            env=build_env,
+        )
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -281,6 +346,7 @@ def install_cuda_extensions(worker_python: Path) -> None:
         ["flash-attn==2.7.3", "--no-build-isolation"],
         cwd=plugin_root,
         required=False,
+        env=build_env,
     )
     if subprocess.run(
         [str(worker_python), "-c", "import flash_attn"],
