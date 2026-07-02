@@ -124,6 +124,7 @@ def scaled_dot_product_attention(*args, **kwargs):
     elif config.BACKEND == 'sdpa':
         if 'sdpa' not in globals():
             from torch.nn.functional import scaled_dot_product_attention as sdpa
+        from ..sparse.attention.full_attn import _memory_safe_sdpa_ctx
         if num_all_args == 1:
             q, k, v = qkv.unbind(dim=2)
         elif num_all_args == 2:
@@ -131,7 +132,8 @@ def scaled_dot_product_attention(*args, **kwargs):
         q = q.permute(0, 2, 1, 3)   # [N, H, L, C]
         k = k.permute(0, 2, 1, 3)   # [N, H, L, C]
         v = v.permute(0, 2, 1, 3)   # [N, H, L, C]
-        out = sdpa(q, k, v)         # [N, H, L, C]
+        with _memory_safe_sdpa_ctx():
+            out = sdpa(q, k, v)     # [N, H, L, C]
         out = out.permute(0, 2, 1, 3)   # [N, L, H, C]
     elif config.BACKEND == 'naive':
         if num_all_args == 1:

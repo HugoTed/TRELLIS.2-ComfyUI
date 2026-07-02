@@ -117,16 +117,18 @@ def sparse_windowed_scaled_dot_product_self_attention(
         out = flash_attn.flash_attn_varlen_qkvpacked_func(qkv_feats, **attn_func_args)  # [M, H, C]
     elif config.ATTN in ('sdpa', 'naive'):
         from torch.nn.functional import scaled_dot_product_attention as sdpa_fn
+        from .full_attn import _memory_safe_sdpa_ctx
         outs = []
         start = 0
-        for sl in attn_func_args['seq_lens'].tolist():
-            chunk = qkv_feats[start : start + sl]
-            q, k, v = chunk.unbind(dim=1)
-            q = q.unsqueeze(0).permute(0, 2, 1, 3)
-            k = k.unsqueeze(0).permute(0, 2, 1, 3)
-            v = v.unsqueeze(0).permute(0, 2, 1, 3)
-            outs.append(sdpa_fn(q, k, v).permute(0, 2, 1, 3).squeeze(0))
-            start += sl
+        with _memory_safe_sdpa_ctx():
+            for sl in attn_func_args['seq_lens'].tolist():
+                chunk = qkv_feats[start : start + sl]
+                q, k, v = chunk.unbind(dim=1)
+                q = q.unsqueeze(0).permute(0, 2, 1, 3)
+                k = k.unsqueeze(0).permute(0, 2, 1, 3)
+                v = v.unsqueeze(0).permute(0, 2, 1, 3)
+                outs.append(sdpa_fn(q, k, v).permute(0, 2, 1, 3).squeeze(0))
+                start += sl
         out = torch.cat(outs, dim=0)
 
     out = out[bwd_indices]      # [T, H, C]

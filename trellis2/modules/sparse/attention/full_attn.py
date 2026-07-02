@@ -9,6 +9,23 @@ __all__ = [
 ]
 
 
+def _memory_safe_sdpa_ctx():
+    """Disallow the math SDP backend: it materializes the full LxL attention
+    matrix, which for long sequences means a single allocation of tens of GB
+    (observed as spurious CUDA OOM with plenty of free VRAM)."""
+    try:
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+
+        backends = [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]
+        if hasattr(SDPBackend, "CUDNN_ATTENTION"):
+            backends.append(SDPBackend.CUDNN_ATTENTION)
+        return sdpa_kernel(backends)
+    except ImportError:
+        import contextlib
+
+        return contextlib.nullcontext()
+
+
 def _varlen_sdpa(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -22,13 +39,14 @@ def _varlen_sdpa(
         kv_seqlen = q_seqlen
     outs: List[torch.Tensor] = []
     q_off = k_off = 0
-    for ql, kvl in zip(q_seqlen, kv_seqlen):
-        qi = q[q_off : q_off + ql].unsqueeze(0).permute(0, 2, 1, 3)
-        ki = k[k_off : k_off + kvl].unsqueeze(0).permute(0, 2, 1, 3)
-        vi = v[k_off : k_off + kvl].unsqueeze(0).permute(0, 2, 1, 3)
-        outs.append(sdpa_fn(qi, ki, vi).permute(0, 2, 1, 3).squeeze(0))
-        q_off += ql
-        k_off += kvl
+    with _memory_safe_sdpa_ctx():
+        for ql, kvl in zip(q_seqlen, kv_seqlen):
+            qi = q[q_off : q_off + ql].unsqueeze(0).permute(0, 2, 1, 3)
+            ki = k[k_off : k_off + kvl].unsqueeze(0).permute(0, 2, 1, 3)
+            vi = v[k_off : k_off + kvl].unsqueeze(0).permute(0, 2, 1, 3)
+            outs.append(sdpa_fn(qi, ki, vi).permute(0, 2, 1, 3).squeeze(0))
+            q_off += ql
+            k_off += kvl
     return torch.cat(outs, dim=0)
 
 
