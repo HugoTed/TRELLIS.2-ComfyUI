@@ -32,7 +32,10 @@ def _is_wsl() -> bool:
 # expandable_segments relies on CUDA VMM APIs that WSL2 does not support.
 # Always choose the allocator ourselves instead of inheriting.
 if _is_wsl():
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "backend:native"
+    # max_split_size_mb limits block splitting so large cached blocks stay
+    # reusable — important on WSL where reserve growth is capped by
+    # Windows-side commit charge and expandable_segments is unsupported.
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "backend:native,max_split_size_mb:512"
 else:
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "backend:native,expandable_segments:True"
 print(f"[trellis2-worker] PYTORCH_CUDA_ALLOC_CONF={os.environ['PYTORCH_CUDA_ALLOC_CONF']}", flush=True)
