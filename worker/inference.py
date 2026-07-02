@@ -39,6 +39,23 @@ _PIPELINE: Trellis2ImageTo3DPipeline | None = None
 _MODEL_ID: str | None = None
 
 
+def _nvidia_smi_mem() -> str:
+    """Global VRAM usage from the driver. On WSL, torch's mem_get_info can
+    miss Windows-side usage entirely; nvidia-smi sees the whole GPU."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return f"nvidia-smi (whole GPU incl. Windows apps): {out.stdout.strip()}"
+    except Exception:
+        pass
+    return "nvidia-smi unavailable"
+
+
 def _cuda_mem_info() -> str:
     if not torch.cuda.is_available():
         return "CUDA not available"
@@ -46,8 +63,9 @@ def _cuda_mem_info() -> str:
     alloc = torch.cuda.memory_allocated()
     reserved = torch.cuda.memory_reserved()
     return (
-        f"GPU VRAM: {free / 1e9:.1f}GB free / {total / 1e9:.1f}GB total "
-        f"(allocated {alloc / 1e9:.1f}GB, reserved {reserved / 1e9:.1f}GB)"
+        f"GPU VRAM (as seen by this process): {free / 1e9:.1f}GB free / {total / 1e9:.1f}GB total "
+        f"(allocated {alloc / 1e9:.1f}GB, reserved {reserved / 1e9:.1f}GB). "
+        f"{_nvidia_smi_mem()}"
     )
 
 
