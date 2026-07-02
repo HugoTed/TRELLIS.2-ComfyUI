@@ -7,6 +7,24 @@ import numpy as np
 from PIL import Image
 
 
+def dinov3_extract_patch_features(model: DINOv3ViTModel, image: torch.Tensor) -> torch.Tensor:
+    """Extract patch tokens from DINOv3 (supports legacy and transformers>=4.56 APIs)."""
+    image = image.to(model.embeddings.patch_embeddings.weight.dtype)
+    if hasattr(model, "layer"):
+        hidden_states = model.embeddings(image, bool_masked_pos=None)
+        position_embeddings = model.rope_embeddings(image)
+        for layer_module in model.layer:
+            hidden_states = layer_module(
+                hidden_states,
+                position_embeddings=position_embeddings,
+            )
+        return F.layer_norm(hidden_states, hidden_states.shape[-1:])
+
+    outputs = model(pixel_values=image)
+    hidden_states = outputs.last_hidden_state
+    return F.layer_norm(hidden_states, hidden_states.shape[-1:])
+
+
 class DinoV2FeatureExtractor:
     """
     Feature extractor for DINOv2 models.
@@ -79,17 +97,7 @@ class DinoV3FeatureExtractor:
         self.model.cpu()
 
     def extract_features(self, image: torch.Tensor) -> torch.Tensor:
-        image = image.to(self.model.embeddings.patch_embeddings.weight.dtype)
-        hidden_states = self.model.embeddings(image, bool_masked_pos=None)
-        position_embeddings = self.model.rope_embeddings(image)
-
-        for i, layer_module in enumerate(self.model.layer):
-            hidden_states = layer_module(
-                hidden_states,
-                position_embeddings=position_embeddings,
-            )
-
-        return F.layer_norm(hidden_states, hidden_states.shape[-1:])
+        return dinov3_extract_patch_features(self.model, image)
         
     @torch.no_grad()
     def __call__(self, image: Union[torch.Tensor, List[Image.Image]]) -> torch.Tensor:
