@@ -97,6 +97,7 @@ ComfyUI 主进程（任意 Python 版本，仅 requests）
 - **Worker 启动失败**：查看插件目录下 `trellis2-worker.log`
 - **flash-attn 安装失败**：在 Worker 环境中 `pip install xformers`，并设置 `ATTN_BACKEND=xformers`
 - **ComfyUI 禁止 subprocess**：启动时加 `--allow-subprocess`
+- **`Allocation on device` / CUDA OOM**：这是 **GPU 显存**不足，与 WSL 系统内存无关。ComfyUI 主进程与 Worker 共用同一张显卡。处理：节点用 `resolution=512`、`max_num_tokens=8192`、`remesh=off`；关闭 Windows 上占用 GPU 的程序；重启 ComfyUI 释放显存；不要用 **Load Model** 预加载。查看显存：`nvidia-smi`（WSL 与 Windows 各跑一次）；Worker 健康检查会返回 `vram_free_gb`。
 
 ## 与 SkinTokens-ComfyUI 的对应关系
 

@@ -21,10 +21,38 @@ _PIPELINE: Trellis2ImageTo3DPipeline | None = None
 _MODEL_ID: str | None = None
 
 
+def _cuda_mem_info() -> str:
+    if not torch.cuda.is_available():
+        return "CUDA not available"
+    free, total = torch.cuda.mem_get_info()
+    alloc = torch.cuda.memory_allocated()
+    reserved = torch.cuda.memory_reserved()
+    return (
+        f"GPU VRAM: {free / 1e9:.1f}GB free / {total / 1e9:.1f}GB total "
+        f"(allocated {alloc / 1e9:.1f}GB, reserved {reserved / 1e9:.1f}GB)"
+    )
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "out of memory" in msg or "allocation on device" in msg
+
+
+def _raise_cuda_oom(exc: BaseException, stage: str) -> None:
+    hint = (
+        f"CUDA OOM during {stage}. {_cuda_mem_info()}. "
+        "This is GPU VRAM, not system RAM — increasing WSL memory does not help. "
+        "Try resolution=512, max_num_tokens=8192, texture_size=1024, remesh=off, fewer steps; "
+        "close Windows GPU apps; restart ComfyUI to free VRAM; avoid Trellis2 Load Model before generate."
+    )
+    raise RuntimeError(hint) from exc
+
+
 def get_pipeline(model_id: str) -> Trellis2ImageTo3DPipeline:
     global _PIPELINE, _MODEL_ID
     if _PIPELINE is None or _MODEL_ID != model_id:
         _PIPELINE = Trellis2ImageTo3DPipeline.from_pretrained(model_id)
+        _PIPELINE.low_vram = True
         _PIPELINE.cuda()
         _MODEL_ID = model_id
     return _PIPELINE
@@ -43,6 +71,8 @@ def mesh_to_glb(
     texture_size: int,
     remesh: bool,
 ) -> bytes:
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     mesh.simplify(16777216)
     glb = o_voxel.postprocess.to_glb(
         vertices=mesh.vertices,
@@ -92,16 +122,24 @@ def generate_glb(payload: dict[str, Any], output_dir: str) -> dict[str, Any]:
         "rescale_t": float(payload.get("tex_rescale_t", 3.0)),
     }
 
-    mesh = pipeline.run(
-        image,
-        seed=seed,
-        preprocess_image=preprocess_image,
-        sparse_structure_sampler_params=sparse_params,
-        shape_slat_sampler_params=shape_params,
-        tex_slat_sampler_params=tex_params,
-        pipeline_type=pipeline_type,
-        max_num_tokens=int(payload.get("max_num_tokens", 49152)),
-    )[0]
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    try:
+        mesh = pipeline.run(
+            image,
+            seed=seed,
+            preprocess_image=preprocess_image,
+            sparse_structure_sampler_params=sparse_params,
+            shape_slat_sampler_params=shape_params,
+            tex_slat_sampler_params=tex_params,
+            pipeline_type=pipeline_type,
+            max_num_tokens=int(payload.get("max_num_tokens", 16384)),
+        )[0]
+    except Exception as exc:
+        if _is_cuda_oom(exc):
+            _raise_cuda_oom(exc, "inference (pipeline.run)")
+        raise
 
     resolution = {
         "512": 512,
@@ -110,13 +148,20 @@ def generate_glb(payload: dict[str, Any], output_dir: str) -> dict[str, Any]:
         "1536_cascade": 1536,
     }[pipeline_type]
 
-    glb_bytes = mesh_to_glb(
-        mesh,
-        resolution=resolution,
-        decimation_target=int(payload.get("decimation_target", 500000)),
-        texture_size=int(payload.get("texture_size", 2048)),
-        remesh=bool(payload.get("remesh", True)),
-    )
+    try:
+        glb_bytes = mesh_to_glb(
+            mesh,
+            resolution=resolution,
+            decimation_target=int(payload.get("decimation_target", 500000)),
+            texture_size=int(payload.get("texture_size", 1024)),
+            remesh=bool(payload.get("remesh", False)),
+        )
+    except Exception as exc:
+        if _is_cuda_oom(exc):
+            _raise_cuda_oom(exc, "GLB export (mesh_to_glb)")
+        raise
+    finally:
+        del mesh
 
     os.makedirs(output_dir, exist_ok=True)
     filename = f"trellis2_{uuid.uuid4().hex}.glb"
@@ -134,10 +179,16 @@ def generate_glb(payload: dict[str, Any], output_dir: str) -> dict[str, Any]:
 
 
 def health() -> dict[str, Any]:
-    return {
+    info: dict[str, Any] = {
         "status": "ok",
         "cuda": torch.cuda.is_available(),
         "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "pipeline_loaded": _PIPELINE is not None,
         "model_id": _MODEL_ID,
     }
+    if torch.cuda.is_available():
+        free, total = torch.cuda.mem_get_info()
+        info["vram_free_gb"] = round(free / 1e9, 2)
+        info["vram_total_gb"] = round(total / 1e9, 2)
+        info["vram_allocated_gb"] = round(torch.cuda.memory_allocated() / 1e9, 2)
+    return info
