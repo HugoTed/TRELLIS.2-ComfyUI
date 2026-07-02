@@ -60,6 +60,8 @@ def calc_window_partition(
             'cu_seqlens': torch.cat([torch.tensor([0], device=tensor.device), torch.cumsum(seq_lens, dim=0)], dim=0).int(),
             'max_seqlen': torch.max(seq_lens)
         }
+    elif config.ATTN in ('sdpa', 'naive'):
+        attn_func_args = {'seq_lens': seq_lens}
 
     return fwd_indices, bwd_indices, seq_lens, attn_func_args
     
@@ -113,6 +115,19 @@ def sparse_windowed_scaled_dot_product_self_attention(
         if 'flash_attn' not in globals():
             import flash_attn
         out = flash_attn.flash_attn_varlen_qkvpacked_func(qkv_feats, **attn_func_args)  # [M, H, C]
+    elif config.ATTN in ('sdpa', 'naive'):
+        from torch.nn.functional import scaled_dot_product_attention as sdpa_fn
+        outs = []
+        start = 0
+        for sl in attn_func_args['seq_lens'].tolist():
+            chunk = qkv_feats[start : start + sl]
+            q, k, v = chunk.unbind(dim=1)
+            q = q.unsqueeze(0).permute(0, 2, 1, 3)
+            k = k.unsqueeze(0).permute(0, 2, 1, 3)
+            v = v.unsqueeze(0).permute(0, 2, 1, 3)
+            outs.append(sdpa_fn(q, k, v).permute(0, 2, 1, 3).squeeze(0))
+            start += sl
+        out = torch.cat(outs, dim=0)
 
     out = out[bwd_indices]      # [T, H, C]
 
@@ -184,6 +199,16 @@ def sparse_windowed_scaled_dot_product_cross_attention(
             cu_seqlens_q=q_attn_func_args['cu_seqlens'], cu_seqlens_k=kv_attn_func_args['cu_seqlens'],
             max_seqlen_q=q_attn_func_args['max_seqlen'], max_seqlen_k=kv_attn_func_args['max_seqlen'],
         )  # [M, H, C]
+    elif config.ATTN in ('sdpa', 'naive'):
+        from .full_attn import _varlen_sdpa
+        k, v = kv_feats.unbind(dim=1)
+        out = _varlen_sdpa(
+            q_feats,
+            k,
+            v,
+            q_attn_func_args['seq_lens'].tolist(),
+            kv_attn_func_args['seq_lens'].tolist(),
+        )
 
     out = out[q_bwd_indices]      # [T, H, C]
 

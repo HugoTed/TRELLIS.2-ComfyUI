@@ -18,6 +18,10 @@ os.chdir(PLUGIN_ROOT)
 os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+from trellis2.utils.attn_env import ensure_attn_backend_env  # noqa: E402
+
+ensure_attn_backend_env()
+
 from trellis2_config import load_config  # noqa: E402
 from worker import inference  # noqa: E402
 

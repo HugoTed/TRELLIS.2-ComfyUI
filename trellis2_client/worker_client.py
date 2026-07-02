@@ -85,6 +85,25 @@ def _start_worker_process():
     env = os.environ.copy()
     env["PYTHONPATH"] = str(plugin_root) + os.pathsep + env.get("PYTHONPATH", "")
     env["TRELLIS2_OUTPUT_DIR"] = output_dir
+    if not env.get("ATTN_BACKEND"):
+        try:
+            result = subprocess.run(
+                [
+                    str(worker_python),
+                    "-c",
+                    "from trellis2.utils.attn_env import ensure_attn_backend_env; print(ensure_attn_backend_env())",
+                ],
+                cwd=str(plugin_root),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            backend = result.stdout.strip()
+            if backend:
+                env["ATTN_BACKEND"] = backend
+        except subprocess.CalledProcessError:
+            env.setdefault("ATTN_BACKEND", "sdpa")
 
     proc = popen_detached(
         [str(worker_python), str(plugin_root / "worker" / "server.py")],
