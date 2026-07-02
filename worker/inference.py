@@ -42,11 +42,13 @@ _MODEL_ID: str | None = None
 def _nvidia_smi_mem() -> str:
     """Global VRAM usage from the driver. On WSL, torch's mem_get_info can
     miss Windows-side usage entirely; nvidia-smi sees the whole GPU."""
+    import shutil
     import subprocess
 
+    smi = shutil.which("nvidia-smi") or "/usr/lib/wsl/lib/nvidia-smi"
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader"],
+            [smi, "--query-gpu=memory.used,memory.total", "--format=csv,noheader"],
             capture_output=True, text=True, timeout=10,
         )
         if out.returncode == 0 and out.stdout.strip():
