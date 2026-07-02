@@ -136,6 +136,9 @@ def mesh_to_glb(
 
 
 def generate_glb(payload: dict[str, Any], output_dir: str) -> dict[str, Any]:
+    params_log = {k: v for k, v in payload.items() if k != "image_b64"}
+    print(f"[trellis2-worker] /generate params: {params_log}", flush=True)
+
     model_id = payload.get("model_id", "microsoft/TRELLIS.2-4B")
     pipeline = get_pipeline(model_id)
 
