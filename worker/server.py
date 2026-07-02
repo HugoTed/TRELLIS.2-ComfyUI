@@ -16,7 +16,23 @@ if PLUGIN_ROOT not in sys.path:
 
 os.chdir(PLUGIN_ROOT)
 os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+
+def _is_wsl() -> bool:
+    try:
+        with open("/proc/version", encoding="utf-8") as f:
+            return "microsoft" in f.read().lower()
+    except OSError:
+        return False
+
+
+# expandable_segments relies on CUDA VMM APIs that WSL2 does not support;
+# enabling it there causes spurious "Allocation on device" failures with
+# plenty of free VRAM.
+if not _is_wsl():
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+elif "expandable_segments" in os.environ.get("PYTORCH_CUDA_ALLOC_CONF", ""):
+    del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
 
 from trellis2.utils.attn_env import ensure_attn_backend_env  # noqa: E402
 
