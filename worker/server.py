@@ -26,13 +26,16 @@ def _is_wsl() -> bool:
         return False
 
 
-# expandable_segments relies on CUDA VMM APIs that WSL2 does not support;
-# enabling it there causes spurious "Allocation on device" failures with
-# plenty of free VRAM.
-if not _is_wsl():
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
-elif "expandable_segments" in os.environ.get("PYTORCH_CUDA_ALLOC_CONF", ""):
-    del os.environ["PYTORCH_CUDA_ALLOC_CONF"]
+# The worker inherits ComfyUI's environment, including its
+# PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync — which is broken on WSL2
+# (spurious "Allocation on device" with plenty of free VRAM). Likewise,
+# expandable_segments relies on CUDA VMM APIs that WSL2 does not support.
+# Always choose the allocator ourselves instead of inheriting.
+if _is_wsl():
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "backend:native"
+else:
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "backend:native,expandable_segments:True"
+print(f"[trellis2-worker] PYTORCH_CUDA_ALLOC_CONF={os.environ['PYTORCH_CUDA_ALLOC_CONF']}", flush=True)
 
 from trellis2.utils.attn_env import ensure_attn_backend_env  # noqa: E402
 
