@@ -8,20 +8,36 @@ from PIL import Image
 
 
 def dinov3_extract_patch_features(model: DINOv3ViTModel, image: torch.Tensor) -> torch.Tensor:
-    """Extract patch tokens from DINOv3 (supports legacy and transformers>=4.56 APIs)."""
-    image = image.to(model.embeddings.patch_embeddings.weight.dtype)
-    if hasattr(model, "layer"):
-        hidden_states = model.embeddings(image, bool_masked_pos=None)
-        position_embeddings = model.rope_embeddings(image)
-        for layer_module in model.layer:
-            hidden_states = layer_module(
-                hidden_states,
-                position_embeddings=position_embeddings,
-            )
-        return F.layer_norm(hidden_states, hidden_states.shape[-1:])
+    """Extract patch tokens from DINOv3 across transformers API versions.
 
-    outputs = model(pixel_values=image)
-    hidden_states = outputs.last_hidden_state
+    TRELLIS.2 conditions on *pre-norm* encoder features followed by a
+    parameter-free layer_norm (mirroring DINOv2's x_prenorm). We must NOT use
+    model(pixel_values=...).last_hidden_state — that output has already passed
+    the model's trained final LayerNorm, which shifts the feature distribution
+    and destroys the conditioning.
+    """
+    image = image.to(model.embeddings.patch_embeddings.weight.dtype)
+
+    layers = getattr(model, "layer", None)
+    if layers is None:
+        # transformers >= 4.6x nests the encoder: DINOv3ViTModel.model.layer
+        encoder = getattr(model, "model", None)
+        layers = getattr(encoder, "layer", None)
+    if layers is None:
+        raise RuntimeError(
+            "Unsupported DINOv3ViTModel structure: cannot locate encoder layers "
+            f"(transformers version incompatibility). Model attrs: {list(dict(model.named_children()).keys())}"
+        )
+
+    hidden_states = model.embeddings(image, bool_masked_pos=None)
+    position_embeddings = model.rope_embeddings(image)
+    for layer_module in layers:
+        hidden_states = layer_module(
+            hidden_states,
+            position_embeddings=position_embeddings,
+        )
+        if isinstance(hidden_states, tuple):
+            hidden_states = hidden_states[0]
     return F.layer_norm(hidden_states, hidden_states.shape[-1:])
 
 
