@@ -2,29 +2,65 @@
 
 ComfyUI 插件：单图生成带 PBR 材质的 3D 模型（GLB），架构参考 [SkinTokens-ComfyUI](https://github.com/HugoTed/SkinTokens-ComfyUI)。
 
-## 安装（三步）
+## 安装（WSL2 四步）
 
 ### 1. 克隆到 ComfyUI custom_nodes
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone --recursive https://github.com/your/TRELLIS.2-ComfyUI.git
+git clone --recursive https://github.com/HugoTed/TRELLIS.2-ComfyUI.git
 ```
 
 > 必须 `--recursive`，否则 `o-voxel` 子模块缺失。
 
-### 2. 重启 ComfyUI
+### 2. 一次性系统依赖（需要 sudo，Setup 节点无法代劳）
 
-ComfyUI 主环境只需 `requests`（通常 ComfyUI-Manager 会自动装 `requirements-comfyui.txt`）。
+```bash
+cd TRELLIS.2-ComfyUI
+sudo bash scripts/setup_wsl_prereqs.sh
+```
 
-### 3. 首次使用
+自动完成：build-essential / python3-venv、gcc-13（新 Ubuntu 默认 GCC 过新）、
+CUDA toolkit（nvcc + dev 头文件，缺失时自动添加 NVIDIA WSL 源）、
+glibc ≥ 2.38 的 CUDA 头文件补丁。幂等，可重复运行。
+
+### 3. 启动 ComfyUI（WSL 建议加参数）
+
+```bash
+python main.py --disable-pinned-memory
+```
+
+> WSL 上 ComfyUI 默认的 pinned memory 会锁定大量系统内存，挤压 Worker 的 GPU 分配额度。
+
+### 4. 首次使用
 
 在 ComfyUI 中任选其一：
 
 - 运行一次 **TRELLIS.2 Setup (Install Worker)** 节点，或
 - 直接运行 **TRELLIS.2 Image to 3D**，首次会自动安装 Worker
 
-插件会在插件目录下创建独立虚拟环境 `.trellis2-venv`（Python 3.10+），自动安装 PyTorch、CUDA 扩展和 TRELLIS.2 依赖，并启动 Worker 子进程。**无需手动配置 Python 路径。**
+插件会在插件目录下创建独立虚拟环境 `.trellis2-venv`，自动安装固定版本 PyTorch（2.6.0+cu124）、
+编译全部 CUDA 扩展（nvdiffrast / CuMesh / FlexGEMM / o-voxel 等）并验证导入，然后启动 Worker 子进程。
+**无需手动配置 Python 路径。** 首次安装需编译扩展，约 10–30 分钟。
+
+### WSL 内存配比（重要）
+
+WSL 里每笔 GPU 显存分配都需要 Windows 宿主侧等量的提交内存做后备，配比不当会出现
+"显存大量空闲却 CUDA OOM"：
+
+- `.wslconfig` 的 `memory` 建议设为物理内存的一半（64GB 机器设 `memory=32GB`），**不要贪多**
+- Windows 页面文件设大一些（如初始 32GB / 最大 64GB），改完重启 Windows
+
+### 可选：flash-attn 加速
+
+Worker 默认自动选择注意力后端（flash_attn → xformers → sdpa，均可工作）。
+手动安装 flash-attn 时**必须用匹配 torch 2.6 的预编译 wheel 并加 `--no-deps`**，
+否则 pip 会升级 torch、破坏已编译的 CUDA 扩展：
+
+```bash
+.trellis2-venv/bin/pip install --no-deps \
+  https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl
+```
 
 ## 工作流节点（category: `3d/trellis2`）
 
@@ -97,7 +133,9 @@ ComfyUI 主进程（任意 Python 版本，仅 requests）
 - **Worker 启动失败**：查看插件目录下 `trellis2-worker.log`
 - **flash-attn 安装失败**：在 Worker 环境中 `pip install xformers`，并设置 `ATTN_BACKEND=xformers`
 - **ComfyUI 禁止 subprocess**：启动时加 `--allow-subprocess`
-- **`Allocation on device` / CUDA OOM**：这是 **GPU 显存**不足，与 WSL 系统内存无关。ComfyUI 主进程与 Worker 共用同一张显卡。处理：节点用 `resolution=512`、`max_num_tokens=8192`、`remesh=off`；关闭 Windows 上占用 GPU 的程序；重启 ComfyUI 释放显存；不要用 **Load Model** 预加载。查看显存：`nvidia-smi`（WSL 与 Windows 各跑一次）；Worker 健康检查会返回 `vram_free_gb`。
+- **CUDA OOM 但显存明明有大量空闲（WSL 特有）**：WSL 的 GPU 分配需要 Windows 宿主提交内存做后备。按顺序排查：① `.wslconfig` 的 `memory` 不要超过物理内存一半；② 加大 Windows 页面文件并重启；③ ComfyUI 加 `--disable-pinned-memory`；④ 关闭 Windows 侧占 GPU/内存的程序（Unity、浏览器等）。内核证据：`dmesg | grep dxg` 出现 `create_allocation failed`。
+- **真·显存不足**：节点用 `resolution=512`、`max_num_tokens=8192`、`texture_size=1024`、`remesh=off`。Worker 健康检查（`curl http://127.0.0.1:18188/health`）会返回 `vram_free_gb`。
+- **装完 flash-attn/xformers 后扩展报 `undefined symbol`**：pip 把 torch 换了版本。恢复：`.trellis2-venv/bin/pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124`，再用 `--no-deps` 装匹配 wheel（见上文）。
 
 ## 与 SkinTokens-ComfyUI 的对应关系
 
