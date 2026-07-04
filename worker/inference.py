@@ -136,13 +136,19 @@ def mesh_to_glb(
 
 
 def generate_glb(payload: dict[str, Any], output_dir: str) -> dict[str, Any]:
-    params_log = {k: v for k, v in payload.items() if k != "image_b64"}
+    params_log = {k: v for k, v in payload.items() if k not in ("image_b64", "images_b64")}
+    if "images_b64" in payload:
+        params_log["num_images"] = len(payload["images_b64"])
     print(f"[trellis2-worker] /generate params: {params_log}", flush=True)
 
     model_id = payload.get("model_id", "microsoft/TRELLIS.2-4B")
     pipeline = get_pipeline(model_id)
 
-    image = image_from_base64(payload["image_b64"])
+    if "images_b64" in payload:
+        images = [image_from_base64(data) for data in payload["images_b64"]]
+    else:
+        images = [image_from_base64(payload["image_b64"])]
+    multi_image_mode = payload.get("multi_image_mode", "stochastic")
     seed = int(payload.get("seed", 0))
     pipeline_type = payload.get("pipeline_type", "1024_cascade")
     preprocess_image = bool(payload.get("preprocess_image", True))
@@ -170,16 +176,29 @@ def generate_glb(payload: dict[str, Any], output_dir: str) -> dict[str, Any]:
         torch.cuda.empty_cache()
 
     try:
-        mesh = pipeline.run(
-            image,
-            seed=seed,
-            preprocess_image=preprocess_image,
-            sparse_structure_sampler_params=sparse_params,
-            shape_slat_sampler_params=shape_params,
-            tex_slat_sampler_params=tex_params,
-            pipeline_type=pipeline_type,
-            max_num_tokens=int(payload.get("max_num_tokens", 16384)),
-        )[0]
+        if len(images) > 1:
+            mesh = pipeline.run_multi_image(
+                images,
+                seed=seed,
+                preprocess_image=preprocess_image,
+                sparse_structure_sampler_params=sparse_params,
+                shape_slat_sampler_params=shape_params,
+                tex_slat_sampler_params=tex_params,
+                pipeline_type=pipeline_type,
+                max_num_tokens=int(payload.get("max_num_tokens", 16384)),
+                mode=multi_image_mode,
+            )[0]
+        else:
+            mesh = pipeline.run(
+                images[0],
+                seed=seed,
+                preprocess_image=preprocess_image,
+                sparse_structure_sampler_params=sparse_params,
+                shape_slat_sampler_params=shape_params,
+                tex_slat_sampler_params=tex_params,
+                pipeline_type=pipeline_type,
+                max_num_tokens=int(payload.get("max_num_tokens", 16384)),
+            )[0]
     except Exception as exc:
         if _is_cuda_oom(exc):
             _raise_cuda_oom(exc, "inference (pipeline.run)")

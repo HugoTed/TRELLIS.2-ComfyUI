@@ -69,6 +69,19 @@ Worker 默认自动选择注意力后端（flash_attn → xformers → sdpa，�
 | **TRELLIS.2 Setup (Install Worker)** | 安装 Worker venv、CUDA 扩展、启动 Worker |
 | **TRELLIS.2 Load Model** | 预加载模型到 GPU（可选） |
 | **TRELLIS.2 Image to 3D** | 单图 → GLB，输出 `model_file` + `FILE_3D_GLB` |
+| **TRELLIS.2 Multi-Image to 3D** | 多视角图（2–8 张） → GLB，融合多图条件提升背面/几何精度 |
+
+### 多图（多视角）节点
+
+`TRELLIS.2 Multi-Image to 3D` 使用官方 tuning-free 多图算法（同 TRELLIS `run_multi_image`）：
+
+- **输入方式**：`images` 接一个 IMAGE batch（同尺寸图可用 Image Batch 节点合批），
+  不同尺寸的图用可选的 `image_2` / `image_3` / `image_4` 口各接一张
+- **multi_image_mode**：
+  - `stochastic`：每步轮换一张图作条件，速度快、省显存
+  - `multidiffusion`（默认）：每步对所有图的预测取平均，质量更高、更慢
+- 所有视角应为**同一物体**，最好为透明背景或可自动抠图的干净图片；
+  视角间姿态不一致时结果可能变形
 
 ### Preview3D 连接
 
