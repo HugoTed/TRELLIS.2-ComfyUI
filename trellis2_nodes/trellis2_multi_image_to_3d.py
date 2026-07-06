@@ -53,6 +53,10 @@ class Trellis2MultiImageTo3D:
                 "image_4": ("IMAGE",),
                 "preprocess_image": ("BOOLEAN", {"default": True}),
                 "remesh": ("BOOLEAN", {"default": False}),
+                "bake_normal_map": ("BOOLEAN", {"default": True}),
+                "bake_ao": ("BOOLEAN", {"default": True}),
+                "ao_samples": ("INT", {"default": 32, "min": 4, "max": 256, "step": 4}),
+                "texture_format": (["png", "webp"], {"default": "png"}),
                 "setup_status": ("STRING", {"default": ""}),
             },
         }
@@ -82,6 +86,10 @@ class Trellis2MultiImageTo3D:
         image_4=None,
         preprocess_image: bool = True,
         remesh: bool = False,
+        bake_normal_map: bool = True,
+        bake_ao: bool = True,
+        ao_samples: int = 32,
+        texture_format: str = "png",
         setup_status: str = "",
     ):
         pipeline_type = {
@@ -119,6 +127,10 @@ class Trellis2MultiImageTo3D:
             "decimation_target": decimation_target,
             "texture_size": texture_size,
             "remesh": remesh,
+            "bake_normal_map": bake_normal_map,
+            "bake_ao": bake_ao,
+            "ao_samples": ao_samples,
+            "texture_format": texture_format,
         }
         result = generate_glb(payload)
         model_file = _to_model_file(result)

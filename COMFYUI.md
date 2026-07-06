@@ -83,6 +83,26 @@ Worker 默认自动选择注意力后端（flash_attn → xformers → sdpa，�
 - 所有视角应为**同一物体**，最好为透明背景或可自动抠图的干净图片；
   视角间姿态不一致时结果可能变形
 
+### PBR 贴图导出（法线 / AO / 金属度粗糙度）
+
+两个生成节点均输出完整 PBR 材质的 GLB：
+
+- **baseColorTexture**：基础色（含 alpha 通道，默认 OPAQUE，不激活透明）
+- **metallicRoughnessTexture / occlusionTexture**：ORM 打包贴图（R=AO, G=Roughness, B=Metallic）
+- **normalTexture**：切线空间法线贴图，从简化前的高模烘焙，保留 decimation 丢失的细节
+
+相关选项：
+
+- `bake_normal_map`（默认开）：烘焙法线贴图
+- `bake_ao`（默认开）：半球射线投射烘焙环境光遮蔽，写入 ORM 的 R 通道
+- `ao_samples`（默认 32）：AO 每纹素采样数，越大越平滑越慢
+- `texture_format`（默认 `png`）：`webp` 体积小但走 `EXT_texture_webp` 扩展，
+  Windows 3D 查看器、旧版 Blender 等许多软件不支持，会表现为**下载后贴图全丢**；
+  默认 `png` 兼容一切 glTF 查看器
+
+> 注意：官方 demo 预览器里的 "Normal" 等模式是**实时渲染的显示模式**,官方 `to_glb`
+> 导出的 GLB 本身并不含法线/AO 贴图——本插件的烘焙是在官方流程之上额外实现的。
+
 ### Preview3D 连接
 
 ```

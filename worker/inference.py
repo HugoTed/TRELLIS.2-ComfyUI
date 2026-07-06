@@ -35,8 +35,9 @@ else:
 import torch
 from PIL import Image
 
-import o_voxel
 from trellis2.pipelines import Trellis2ImageTo3DPipeline
+
+from worker import glb_export
 
 _PIPELINE: Trellis2ImageTo3DPipeline | None = None
 _MODEL_ID: str | None = None
@@ -111,11 +112,15 @@ def mesh_to_glb(
     decimation_target: int,
     texture_size: int,
     remesh: bool,
+    bake_normal_map: bool = True,
+    bake_ao: bool = True,
+    ao_samples: int = 32,
+    texture_format: str = "png",
 ) -> bytes:
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     mesh.simplify(16777216)
-    glb = o_voxel.postprocess.to_glb(
+    glb = glb_export.to_glb(
         vertices=mesh.vertices,
         faces=mesh.faces,
         attr_volume=mesh.attrs,
@@ -128,10 +133,14 @@ def mesh_to_glb(
         remesh=remesh,
         remesh_band=1,
         remesh_project=0,
-        use_tqdm=False,
+        bake_normal_map=bake_normal_map,
+        bake_ao=bake_ao,
+        ao_samples=ao_samples,
     )
     buf = io.BytesIO()
-    glb.export(buf, extension_webp=True, file_type="glb")
+    # WebP textures (EXT_texture_webp) are smaller but unsupported by many
+    # viewers (Windows 3D Viewer, older Blender) — PNG is the safe default.
+    glb.export(buf, extension_webp=(texture_format == "webp"), file_type="glb")
     return buf.getvalue()
 
 
@@ -218,6 +227,10 @@ def generate_glb(payload: dict[str, Any], output_dir: str) -> dict[str, Any]:
             decimation_target=int(payload.get("decimation_target", 500000)),
             texture_size=int(payload.get("texture_size", 1024)),
             remesh=bool(payload.get("remesh", False)),
+            bake_normal_map=bool(payload.get("bake_normal_map", True)),
+            bake_ao=bool(payload.get("bake_ao", True)),
+            ao_samples=int(payload.get("ao_samples", 32)),
+            texture_format=str(payload.get("texture_format", "png")),
         )
     except Exception as exc:
         if _is_cuda_oom(exc):
